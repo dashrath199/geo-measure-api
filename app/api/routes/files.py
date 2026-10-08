@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, File, UploadFile
+from fastapi import APIRouter, Depends, File, Response, UploadFile
 
 from app.api.deps import (
     get_feature_measurement_repository,
@@ -41,16 +41,30 @@ router = APIRouter(prefix="/files", tags=["files"])
     status_code=201,
     summary="Register a geospatial file for measurement",
     description=(
-        "Register a geospatial file for measurement. Valid formats are a «.zip» "
-        "archive containing a shapefile (with or without ``.prj``) or a «.kml» "
-        "document; anything else is rejected with 415. The response reports the "
-        "acceptance stage (``PROCESSING``) per the upload contract; the pipeline "
-        "then runs within this request, persists the final state "
-        "(``COMPLETED``/``FAILED``) and exposes it through the two retrieval "
-        "endpoints below. On pipeline failure the response reports ``FAILED`` — "
-        "clients never receive internal error details here."
+        "Upload a geospatial file for measurement.\n"
+        "\n"
+        "**Request:** `multipart/form-data` with a single file part named `file`.\n"
+        "\n"
+        "**Accepted formats** — detected from the filename extension, then verified against the content:\n"
+        "\n"
+        "- `.zip` — a Shapefile archive containing at least one `.shp` together with its `.shx` and `.dbf` siblings (`.prj` is optional; without it the CRS stays unknown and measurement is skipped). Archive safety limits apply (member count, total uncompressed size, no traversal paths).\n"
+        "- `.kml` — an OGC KML document; coordinates are WGS 84 per the specification, so EPSG:4326 is applied when the reader reports no CRS.\n"
+        "\n"
+        "Anything else is rejected with `415 UNSUPPORTED_FILE_TYPE`; an oversized body is rejected with `413 FILE_TOO_LARGE` (`MAX_UPLOAD_MB`, 10 MB by default); a missing file part is `422 VALIDATION_ERROR`.\n"
+        "\n"
+        "**Behavior:** the response reports the acceptance stage (`PROCESSING`); the pipeline then runs within this request, persists the final state (`COMPLETED`/`FAILED`) and exposes it through the two retrieval endpoints below. On pipeline failure the response reports `FAILED` — clients never receive internal error details here. The `Location` header points at the created resource."
     ),
+    response_description="File id, sanitized filename and acceptance status (PROCESSING, or FAILED when the in-request pipeline failed).",
     responses={
+        201: {
+            "headers": {
+                "Location": {
+                    "description": "Canonical URL of the created file "
+                    "resource (/api/files/{file_id}/).",
+                    "schema": {"type": "string"},
+                },
+            },
+        },
         400: {
             "description": "Malformed archive or invalid file content.",
             "model": ErrorResponse,
@@ -74,6 +88,7 @@ router = APIRouter(prefix="/files", tags=["files"])
     },
 )
 async def upload_file(
+    response: Response,
     file: UploadFile = File(
         description="Geospatial file: a .zip containing a shapefile, or a .kml file."
     ),
@@ -89,6 +104,7 @@ async def upload_file(
     clients never receive internal error details here.
 
     Args:
+        response: Outgoing response; receives the ``Location`` header.
         file: The multipart file part.
         service: Upload orchestration service.
         processing: End-to-end processing pipeline.
@@ -97,7 +113,7 @@ async def upload_file(
         The registered file's id, sanitized filename and status.
     """
     record: FileRecord = await service.upload(file)
-    response = FileUploadResponse(
+    payload = FileUploadResponse(
         id=record.id,
         filename=record.original_filename,
         status=record.status,
@@ -105,8 +121,10 @@ async def upload_file(
 
     summary = processing.process(record.id)
     if summary.status == FileStatus.FAILED:
-        response.status = FileStatus.FAILED
-    return response
+        payload.status = FileStatus.FAILED
+    # 201 Created convention: point clients at the new resource.
+    response.headers["Location"] = f"/api/files/{record.id}/"
+    return payload
 
 
 def _to_file_info(record: FileRecord) -> FileInfoResponse:
@@ -145,8 +163,29 @@ def _to_file_info(record: FileRecord) -> FileInfoResponse:
     response_model=FileInfoResponse,
     summary="Return metadata for one uploaded file",
     description=(
-        "Return the persisted metadata of one uploaded file. The response\n    contains client-safe fields only: the sanitized filename, detected\n    input format, processing status, extracted feature count, source CRS\n    (when known) and an error message \u2014 exposed **only** while the record\n    is `FAILED`, never for a successful status. Storage paths,\n    settings and host details are never serialized.\n\n    Unrecognised (but well-formed) ids return 404 `FILE_NOT_FOUND`;\n    malformed ids (not a UUID) return 422 `VALIDATION_ERROR`.\n\n    Response format:\n    {\n      «id»: \"3f0c9f1e-8a5d-4f3a-9c2b-1d4e6a8b0c7d\",\n      «filename»: \"survey.kml\",\n      «file_type»: \"shapefile_zip\" | «kml\",\n      «status»: «UPLOADED» | «PROCESSING» | «COMPLETED» | «FAILED»,\n      «feature_count»: 120,\n      «crs»: null | «EPSG:32632»,\n      «error_message»: null | \"safe, redacted message\",\n      «created_at»: «2026-10-08T12:00:00Z»,\n      «updated_at»: «2026-10-08T12:00:01Z»\n    }\n\nPossible errors\n----------------\n- **404** `FILE_NOT_FOUND` \u2014 no record with that id;\n- **422** `VALIDATION_ERROR` \u2014 path parameter is not a UUID;\n- **500** `INTERNAL_ERROR` \u2014 unexpected server failure (generic message).\n"
+        "Return the persisted metadata of one uploaded file.\n"
+        "\n"
+        "The response contains client-safe fields only: the sanitized filename, detected input format, processing status, extracted feature count, source CRS (when known) and an error message — exposed **only** while the record is `FAILED`, never for a successful status. Storage paths, settings and host details are never serialized.\n"
+        "\n"
+        "Unrecognised (but well-formed) ids return `404 FILE_NOT_FOUND`; malformed ids (not a UUID) return `422 VALIDATION_ERROR`.\n"
+        "\n"
+        "**Example**\n"
+        "\n"
+        "```json\n"
+        "{\n"
+        "  \"id\": \"3f0c9f1e-8a5d-4f3a-9c2b-1d4e6a8b0c7d\",\n"
+        "  \"filename\": \"survey.kml\",\n"
+        "  \"file_type\": \"kml\",\n"
+        "  \"status\": \"COMPLETED\",\n"
+        "  \"feature_count\": 120,\n"
+        "  \"crs\": \"EPSG:4326\",\n"
+        "  \"error_message\": null,\n"
+        "  \"created_at\": \"2026-10-08T12:00:00Z\",\n"
+        "  \"updated_at\": \"2026-10-08T12:00:01Z\"\n"
+        "}\n"
+        "```"
     ),
+    response_description="Client-safe metadata for the file; storage paths and settings are never included.",
     responses={
         404: {
             "description": "No file with that id.",
@@ -227,8 +266,45 @@ def _to_measurement_info(
     response_model=FileMeasurementsResponse,
     summary="Return per-feature measurements for one file",
     description=(
-        "Return every feature of one uploaded file with its measurement,\n    if any, and a structured outcome. Measuring is always planar in a\n    projected, metric CRS: areas are `square_meters` (m²), lengths are\n    `meters` (m) \u2014 never degrees.\n\n    The `crs` field carries the source CRS of the features. Files never\n    processed simply return an empty `features` list; a file whose\n    processing failed returns an empty list too (check `status` via\nGET `/api/files/{id}/`).\n\n    Measurement rules\n    -----------------\n    | Geometry | Unit | Outcome |\n    |---|---|---|---|\n    | Polygon / MultiPolygon | `square_meters` | measured (SUPPORTED) |\n    | LineString / LinearRing / MultiLineString | `meters` | measured (SUPPORTED) |\n    | GeometryCollection (areal, or linear-only, or points-only) | \u2014 | \u2014 |\n    | Point / MultiPoint | \u2014 | `null` measurement, NO_MEASUREMENT |\n    | Empty / missing geometry | \u2014 | skipped_empty / skipped_missing_geometry |\n    | Invalid geometry | \u2014 | skipped_invalid |\n    | Unknown geometry type | \u2014 | skipped_unsupported_type |\n    | Undefined / unparseable CRS | \u2014 | skipped_no_crs / skipped_invalid_crs |\n\n    Response format\n    ---------------\n    {\n      \"file_id\": \"3f0c9f1e-8a5d-4f3a-9c2b-1d4e6a8b0c7d\",\n      \"crs\": \"EPSG:4326\",\n      \"features\": [\n        {\n          \"feature_id\": 0,\n          \"geometry_type\": \"Polygon\",\n          \"measurement\": {\n            \"type\": \"area\",\n            \"value\": 15234.52,\n            \"unit\": \"square_meters\"\n          },\n          \"status\": \"SUPPORTED\",\n          \"category\": \"SUPPORTED\",\n          \"reason\": null,\n          \"properties\": {\"name\": \"zone a\"}\n        }\n      ]\n    }\n\nPossible errors\n----------------\n- **404** `FILE_NOT_FOUND` \u2014 no record with that id;\n- **422** `VALIDATION_ERROR` \u2014 path parameter is not a UUID;\n- **500** `INTERNAL_ERROR` \u2014 unexpected server failure (generic message).\n"
+        "Return every feature of one uploaded file with its measurement, if any, and a structured outcome. Measuring is always planar in a projected, metric CRS: areas are `square_meters` (m²), lengths are `meters` (m) — never degrees.\n"
+        "\n"
+        "The `crs` field carries the source CRS of the features. Files never processed return an empty `features` list; a file whose processing failed returns an empty list too (check `status` via `GET /api/files/{file_id}/`).\n"
+        "\n"
+        "**Measurement rules**\n"
+        "\n"
+        "| Geometry | Unit | Outcome |\n"
+        "|---|---|---|\n"
+        "| Polygon / MultiPolygon | `square_meters` | measured (SUPPORTED) |\n"
+        "| LineString / LinearRing / MultiLineString | `meters` | measured (SUPPORTED) |\n"
+        "| GeometryCollection (areal, or linear-only, or points-only) | — | — |\n"
+        "| Point / MultiPoint | — | `null` measurement, NO_MEASUREMENT |\n"
+        "| Empty / missing geometry | — | skipped_empty / skipped_missing_geometry |\n"
+        "| Invalid geometry | — | skipped_invalid |\n"
+        "| Unknown geometry type | — | skipped_unsupported_type |\n"
+        "| Undefined / unparseable CRS | — | skipped_no_crs / skipped_invalid_crs |\n"
+        "\n"
+        "**Example**\n"
+        "\n"
+        "```json\n"
+        "{\n"
+        "  \"file_id\": \"3f0c9f1e-8a5d-4f3a-9c2b-1d4e6a8b0c7d\",\n"
+        "  \"crs\": \"EPSG:4326\",\n"
+        "  \"features\": [\n"
+        "    {\n"
+        "      \"feature_id\": 0,\n"
+        "      \"geometry_type\": \"Polygon\",\n"
+        "      \"measurement\": {\"type\": \"area\", \"value\": 15234.52, \"unit\": \"square_meters\"},\n"
+        "      \"status\": \"SUPPORTED\",\n"
+        "      \"reason\": null,\n"
+        "      \"properties\": {\"name\": \"zone a\"}\n"
+        "    }\n"
+        "  ]\n"
+        "}\n"
+        "```\n"
+        "\n"
+        "**Possible errors:** `404 FILE_NOT_FOUND` (unknown id), `422 VALIDATION_ERROR` (path parameter is not a UUID), `500 INTERNAL_ERROR` (unexpected server failure)."
     ),
+    response_description="Source crs plus one entry per feature with its measurement (or null) and structured status.",
     responses={
         404: {
             "description": "No file with that id.",

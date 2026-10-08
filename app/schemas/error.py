@@ -11,7 +11,7 @@ responses themselves are built in ``app.main``'s exception handlers.
 
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class ErrorDetail(BaseModel):
@@ -38,5 +38,19 @@ class ErrorResponse(BaseModel):
     Attributes:
         error: The error detail object.
     """
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "error": {
+                    "code": "UNSUPPORTED_FILE_TYPE",
+                    "message": (
+                        "Unsupported file format (.txt); "
+                        "supported: .kml, .zip"
+                    ),
+                }
+            }
+        }
+    )
 
     error: ErrorDetail
