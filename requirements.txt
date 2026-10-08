@@ -1,0 +1,26 @@
+# Runtime dependencies for the geospatial measurement API.
+fastapi>=0.115,<1.0
+uvicorn[standard]>=0.30,<1.0
+pydantic>=2.7,<3.0
+pydantic-settings>=2.3,<3.0
+python-dotenv>=1.0,<2.0
+
+# File-upload handling for FastAPI (multipart/form-data parsing).
+python-multipart>=0.0.9,<1.0
+
+# Geospatial stack.
+# GeoPandas >= 1.0 uses pyogrio (bundled GDAL) as its default I/O engine;
+# pyogrio is therefore the REQUIRED engine for reading Shapefiles and KML.
+geopandas>=1.0,<2.0
+shapely>=2.0,<3.0
+pyproj>=3.6,<4.0
+pyogrio>=0.8,<1.0
+
+# Persistence (SQLite by default; any SQLAlchemy-supported URL works).
+SQLAlchemy>=2.0,<3.0
+
+# Fiona: legacy GeoPandas I/O engine. No wheels exist for Python 3.14 and a
+# source build requires a system GDAL installation, so it is only installed
+# where a wheel is available (Python <= 3.13). The app verifies at startup
+# that a working engine (pyogrio, or Fiona as fallback) is present.
+fiona>=1.9,<2.0; python_version < "3.14"
