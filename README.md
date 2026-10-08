@@ -127,31 +127,55 @@ Codes are declared on the custom exception hierarchy
 (`app/main.py`). Unexpected exceptions are logged with full tracebacks
 for operators; clients only ever see a generic `INTERNAL_ERROR`.
 
+### A. HTTP-level errors
+
+These are the failures that actually return an HTTP error response —
+raised while the request is parsed and validated (upload validation
+runs before anything is stored):
+
 | Scenario | HTTP | `code` |
 |---|---|---|
 | Unsupported file type | 415 | `UNSUPPORTED_FILE_TYPE` |
-| Malformed KML | 400 | `MALFORMED_KML` |
+| Malformed KML content (upload validation) | 400 | `MALFORMED_KML` |
 | Malformed ZIP | 400 | `MALFORMED_ZIP` |
 | Unsafe archive (traversal, zip bomb, links, …) | 400 | `UNSAFE_ARCHIVE` |
-| Invalid Shapefile / unreadable dataset | 400 | `INVALID_SHAPEFILE` |
+| KML with DTD/ENTITY declarations | 400 | `UNSAFE_CONTENT` |
+| Archive without any `.shp` dataset | 400 | `INVALID_SHAPEFILE` |
 | Missing Shapefile components (`.shx`, `.dbf`) | 400 | `MISSING_SHAPEFILE_COMPONENT` |
-| Missing CRS | 400 | `MISSING_CRS` |
-| Invalid CRS | 400 | `INVALID_CRS` |
-| Invalid geometry | 400 | `INVALID_GEOMETRY` |
-| Empty geometry | 400 | `EMPTY_GEOMETRY` |
-| Unsupported geometry | 400 | `UNSUPPORTED_GEOMETRY` |
 | File not found | 404 | `FILE_NOT_FOUND` |
-| Processing failure | 400 | `PROCESSING_FAILURE` |
 | Oversized upload | 413 | `FILE_TOO_LARGE` |
-| Storage failure | 500 | `STORAGE_FAILURE` |
 | Malformed request (validation) | 422 | `VALIDATION_ERROR` |
 | Unknown route / wrong method | 404 / 405 | `NOT_FOUND` / `METHOD_NOT_ALLOWED` |
+| Storage failure | 500 | `STORAGE_FAILURE` |
 | Unexpected exception (logged) | 500 | `INTERNAL_ERROR` |
 
-Per-feature geometry/CRS problems never fail a file: they are
-isolated as structured skip statuses (matrix above). The geometry/CRS
-codes apply when such a problem surfaces as a request-level domain
-error.
+### B. Processing failures (recorded, not returned as HTTP errors)
+
+`POST /api/files/` answers **201** once the upload has been validated,
+stored and registered; the pipeline then runs *within that same
+request* and the record ends up `COMPLETED` or `FAILED`:
+
+- The 201 body reports the acceptance stage (`PROCESSING`), or
+  `FAILED` when the in-request pipeline already failed — clients
+  never receive internal error details there.
+- Pipeline-level failures are captured as a `FAILED` record with a
+  redacted `error_message` instead of an HTTP error: an unreadable or
+  corrupt dataset (`PROCESSING_FAILURE`, `INVALID_SHAPEFILE`,
+  `MALFORMED_KML` at re-parse), an unusable geometry column
+  (`INVALID_GEOMETRY`), a foreign geometry type at read time
+  (`UNSUPPORTED_GEOMETRY`), or a dataset above `MAX_FEATURES`
+  (`TOO_MANY_FEATURES`). Read the outcome from
+  `GET /api/files/{id}/`.
+- Per-feature problems never fail the file: missing CRS
+  (`MISSING_CRS`), unparseable CRS (`INVALID_CRS`), empty geometry
+  (`EMPTY_GEOMETRY`), invalid or unknown geometry are isolated as
+  structured per-feature skip statuses with a `reason` in
+  `GET /api/files/{id}/measurements/` (matrix above), and the file
+  still reports `COMPLETED`.
+
+The exception hierarchy still maps these domain codes to HTTP 400
+should one ever surface as a request-level domain error — but the
+pipeline itself captures them as described above.
 
 ## Security
 
@@ -187,8 +211,9 @@ measurement API and authentication was explicitly out of scope.
 
 All measurements are computed **after** CRS transformation into a
 projected, metric CRS (see *CRS strategy*). Every case returns a
-structured `category` (`SUPPORTED` · `UNSUPPORTED` · `INVALID` ·
-`NO_MEASUREMENT`) plus a detailed `status` — no case raises.
+structured category — `SUPPORTED` · `UNSUPPORTED` · `INVALID` ·
+`NO_MEASUREMENT` (reported as the response's `status` field) plus a
+human-readable `reason` where relevant — no case raises.
 
 | Geometry | Measurement | Unit | Category | Behavior |
 |---|---|---|---|---|
@@ -209,12 +234,41 @@ structured `category` (`SUPPORTED` · `UNSUPPORTED` · `INVALID` ·
 | No CRS metadata | — | — | `NO_MEASUREMENT` | **Never** assumed to be EPSG:4326 |
 | Unparseable CRS | — | — | `NO_MEASUREMENT` | Domain error surfaced as a skip |
 
-Example results:
+Example results — the public response shape of
+`GET /api/files/{id}/measurements/` (one entry per feature; there is
+no `category` or `measurement_crs` field):
 
 ```json
-{"feature_id": 0, "measurement": {"area": 12345.67, "unit": "square_meters"}, "status": "measured", "category": "SUPPORTED", "measurement_crs": "EPSG:32632"}
-{"feature_id": 1, "measurement": {"length": 4567.89, "unit": "meters"}, "status": "measured", "category": "SUPPORTED", "measurement_crs": "EPSG:32632"}
-{"feature_id": 2, "measurement": null, "status": "not_required", "category": "NO_MEASUREMENT"}
+{
+  "file_id": "3f0c9f1e-8a5d-4f3a-9c2b-1d4e6a8b0c7d",
+  "crs": "EPSG:4326",
+  "features": [
+    {
+      "feature_id": 0,
+      "geometry_type": "Polygon",
+      "measurement": {"type": "area", "value": 12345.67, "unit": "square_meters"},
+      "status": "SUPPORTED",
+      "reason": null,
+      "properties": {"name": "zone a"}
+    },
+    {
+      "feature_id": 1,
+      "geometry_type": "LineString",
+      "measurement": {"type": "length", "value": 4567.89, "unit": "meters"},
+      "status": "SUPPORTED",
+      "reason": null,
+      "properties": {"name": "centerline"}
+    },
+    {
+      "feature_id": 2,
+      "geometry_type": "Point",
+      "measurement": null,
+      "status": "NO_MEASUREMENT",
+      "reason": "Point geometries require no measurement",
+      "properties": {}
+    }
+  ]
+}
 ```
 
 ## CRS strategy (why projection matters)

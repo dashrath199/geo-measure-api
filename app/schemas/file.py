@@ -2,11 +2,36 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_serializer,
+    field_validator,
+)
 
 from app.db.models import FileStatus
+
+
+def _as_utc(value: datetime) -> datetime:
+    """Return ``value`` as an aware UTC datetime.
+
+    Timestamps are kept in UTC end to end, but SQLite's ``DATETIME``
+    type hands them back without timezone information. A naive value is
+    therefore *UTC by contract* — the missing offset is attached here so
+    it can never be reinterpreted as local time.
+
+    Args:
+        value: A naive (UTC) or already aware datetime.
+
+    Returns:
+        The equivalent timezone-aware UTC datetime.
+    """
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
 
 
 class FileUploadResponse(BaseModel):
@@ -50,8 +75,11 @@ class FileInfoResponse(BaseModel):
             yet processed.
         error_message: Safe failure text — present only when ``status``
             is ``FAILED`` (paths redacted, never a stack trace).
-        created_at: Upload timestamp (UTC).
-        updated_at: Last status-change timestamp (UTC).
+        created_at: Upload timestamp (UTC); serialized as RFC 3339
+            with an explicit ``Z`` suffix (e.g.
+            ``2026-10-08T11:00:07.887267Z``).
+        updated_at: Last status-change timestamp (UTC); serialized
+            like ``created_at``.
     """
 
     model_config = ConfigDict(
@@ -86,5 +114,50 @@ class FileInfoResponse(BaseModel):
         default=None,
         description="Sanitized failure detail; set only when FAILED.",
     )
-    created_at: datetime = Field(description="Upload timestamp (UTC).")
-    updated_at: datetime = Field(description="Last update timestamp (UTC).")
+    created_at: datetime = Field(
+        description=(
+            "Upload timestamp (UTC, RFC 3339 with a Z suffix)."
+        ),
+        # Kept explicit: the JSON serializer below returns a plain
+        # string, which would otherwise drop ``format`` from the
+        # (serialization-mode) OpenAPI schema.
+        json_schema_extra={"format": "date-time"},
+    )
+    updated_at: datetime = Field(
+        description=(
+            "Last update timestamp (UTC, RFC 3339 with a Z suffix)."
+        ),
+        json_schema_extra={"format": "date-time"},
+    )
+
+    @field_validator("created_at", "updated_at", mode="before")
+    @classmethod
+    def _timestamps_stay_utc(cls, value: object) -> object:
+        """Interpret naive stored timestamps as UTC.
+
+        Storage keeps UTC without an offset; attaching ``tzinfo`` here
+        preserves that meaning instead of letting serialization guess
+        a local timezone.
+
+        Args:
+            value: The raw value coming from storage.
+
+        Returns:
+            The value with explicit UTC semantics (unchanged otherwise).
+        """
+        if isinstance(value, datetime):
+            return _as_utc(value)
+        return value
+
+    @field_serializer("created_at", "updated_at", when_used="json")
+    def _serialize_utc_z(self, value: datetime) -> str:
+        """Serialize timestamps as explicit UTC with a ``Z`` suffix.
+
+        Args:
+            value: The timestamp to serialize.
+
+        Returns:
+            An RFC 3339 UTC string such as
+            ``2026-10-08T11:00:07.887267Z``.
+        """
+        return _as_utc(value).isoformat().replace("+00:00", "Z")

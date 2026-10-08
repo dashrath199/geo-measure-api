@@ -14,7 +14,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from app.db.models import FeatureMeasurementRecord, FileRecord, FileStatus
-from app.exceptions import FileRecordNotFoundError
+from app.exceptions import FileRecordNotFoundError, redact_paths
 from app.schemas.measurement import (
     AreaMeasurement,
     FeatureMeasurement,
@@ -195,6 +195,11 @@ class FeatureMeasurementRepository:
     ) -> None:
         """Persist a file's results, replacing any previous run.
 
+        The ``reason`` text is passed through :func:`redact_paths` on
+        the way in (defense in depth with the read path): reasons can
+        embed exception text, and server paths must never be stored in
+        a field that is served to clients.
+
         Args:
             file_id: Owning file id.
             results: Per-feature measurements from the engine.
@@ -206,6 +211,9 @@ class FeatureMeasurementRepository:
         )
         for result in results:
             kind, value, unit = self._split_measurement(result)
+            reason = (
+                redact_paths(result.reason) if result.reason else None
+            )
             self._session.add(
                 FeatureMeasurementRecord(
                     file_id=file_id,
@@ -217,7 +225,7 @@ class FeatureMeasurementRepository:
                     status=result.status.value,
                     category=result.category.value,
                     measurement_crs=result.measurement_crs,
-                    reason=result.reason,
+                    reason=reason,
                     properties_json=result.properties.model_dump_json(),
                 )
             )

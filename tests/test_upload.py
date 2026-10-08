@@ -180,6 +180,21 @@ def test_valid_kml_upload(
     assert stored.read_bytes() == kml_bytes
 
 
+def test_upload_sets_location_header(
+    client: TestClient, kml_bytes: bytes
+) -> None:
+    """201 responses carry a ``Location`` header for the new resource.
+
+    The header is the documented ``GET`` URL of the created file, with
+    the trailing slash the API uses for its resource routes.
+    """
+    response = _post(client, "survey.kml", kml_bytes)
+
+    assert response.status_code == 201
+    file_id = response.json()["id"]
+    assert response.headers["Location"] == f"/api/files/{file_id}/"
+
+
 def test_valid_shapefile_zip_upload(
     client: TestClient, settings: Settings, shapefile_zip_bytes: bytes
 ) -> None:

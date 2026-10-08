@@ -7,7 +7,8 @@ filesystem paths, no server-internal information.
 
 from __future__ import annotations
 
-from datetime import datetime
+import re
+from datetime import datetime, timedelta
 
 from fastapi.testclient import TestClient
 
@@ -71,6 +72,30 @@ def test_get_completed_file_returns_expected_shape(
     assert isinstance(body["created_at"], str)
     assert isinstance(body["updated_at"], str)
     datetime.fromisoformat(body["created_at"])  # parseable
+
+
+def test_timestamps_are_explicit_utc_with_z(
+    client: TestClient,
+) -> None:
+    """``created_at``/``updated_at`` serialize as RFC 3339 UTC (`…Z`).
+
+    The wire format must carry an explicit UTC designator — never a
+    naive, offset-less timestamp — and both fields must parse back to
+    an aware UTC datetime.
+    """
+    file_id = _upload(client)
+
+    body = client.get(f"/api/files/{file_id}/").json()
+
+    for key in ("created_at", "updated_at"):
+        value = body[key]
+        assert isinstance(value, str)
+        assert re.fullmatch(
+            r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z", value
+        ), f"{key}={value!r} is not an explicit UTC timestamp"
+        parsed = datetime.fromisoformat(value)  # accepts the Z suffix
+        assert parsed.tzinfo is not None
+        assert parsed.utcoffset() == timedelta(0)
 
 
 def test_shapefile_file_reports_shapefile_metadata(

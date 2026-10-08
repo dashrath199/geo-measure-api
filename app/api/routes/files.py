@@ -87,7 +87,10 @@ router = APIRouter(prefix="/files", tags=["files"])
         },
     },
 )
-async def upload_file(
+# Deliberately a plain ``def`` endpoint: validation, storage and the
+# geospatial pipeline are synchronous CPU/file work, so FastAPI runs
+# this handler in its threadpool instead of blocking the event loop.
+def upload_file(
     response: Response,
     file: UploadFile = File(
         description="Geospatial file: a .zip containing a shapefile, or a .kml file."
@@ -112,7 +115,7 @@ async def upload_file(
     Returns:
         The registered file's id, sanitized filename and status.
     """
-    record: FileRecord = await service.upload(file)
+    record: FileRecord = service.upload(file)
     payload = FileUploadResponse(
         id=record.id,
         filename=record.original_filename,
@@ -234,7 +237,9 @@ def _to_measurement_info(
     Only scalars cross this boundary: the measurement block is built
     from ``kind``/``value``/``unit`` and attributes are parsed from
     their JSON column — no ORM or geometry objects leak into the
-    response.
+    response. ``reason`` is re-redacted on the read path (defense in
+    depth with the write path — a writer that skipped sanitization
+    still cannot leak a server path).
 
     Args:
         row: The persisted row.
@@ -254,7 +259,7 @@ def _to_measurement_info(
         geometry_type=row.geometry_type,
         measurement=measurement,
         status=MeasurementCategory(row.category),
-        reason=row.reason,
+        reason=redact_paths(row.reason) if row.reason else None,
         properties=Properties(
             json.loads(row.properties_json or "{}")
         ),

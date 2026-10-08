@@ -46,7 +46,12 @@ class Settings(BaseSettings):
     )
     debug: bool = Field(
         default=False,
-        description="Whether to expose verbose error details.",
+        description=(
+            "Debug marker reported in startup logs. It never changes "
+            "API responses: error bodies stay inside the JSON error "
+            "envelope (no tracebacks, no verbose details) whether "
+            "debug is on or off."
+        ),
     )
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = Field(
         default="INFO",

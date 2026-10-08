@@ -82,8 +82,13 @@ class FileService:
         """Return the configured upload limit in bytes."""
         return self._settings.max_upload_mb * 1024 * 1024
 
-    async def _read_limited(self, upload: UploadFile) -> bytes:
+    def _read_limited(self, upload: UploadFile) -> bytes:
         """Read the whole upload, aborting as soon as the limit is passed.
+
+        Reads the already-spooled upload file directly: the route runs
+        in FastAPI's threadpool, so synchronous file I/O is the right
+        model here (the multipart parser has fully buffered the part
+        and left it positioned at the start).
 
         Args:
             upload: The multipart upload.
@@ -97,7 +102,7 @@ class FileService:
         limit = self.max_upload_bytes
         buffer = bytearray()
         while True:
-            chunk = await upload.read(_CHUNK_SIZE)
+            chunk = upload.file.read(_CHUNK_SIZE)
             if not chunk:
                 break
             buffer.extend(chunk)
@@ -105,8 +110,12 @@ class FileService:
                 raise FileTooLargeError(limit)
         return bytes(buffer)
 
-    async def upload(self, upload: UploadFile) -> object:
+    def upload(self, upload: UploadFile) -> object:
         """Process one upload end-to-end.
+
+        Synchronous by design: the caller (``POST /api/files/``) is a
+        plain ``def`` route executed in the threadpool, keeping CPU and
+        file work off the event loop.
 
         Args:
             upload: The multipart file part.
@@ -123,7 +132,7 @@ class FileService:
         """
         original_filename = sanitize_filename(upload.filename)
         file_type = detect_file_type(original_filename)
-        data = await self._read_limited(upload)
+        data = self._read_limited(upload)
         validate_file_content(file_type, data)
 
         if file_type == "shapefile_zip":
