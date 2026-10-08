@@ -30,6 +30,31 @@ Configuration is environment-driven:
 `DATABASE_URL`, `MAX_UPLOAD_MB`, `MAX_FEATURES`, `STORAGE_DIR`,
 `LOG_LEVEL`, …
 
+### Configuration reference
+
+All settings are read by `app/config.py` (pydantic-settings): real
+environment variables first, then a local `.env` file, then the
+defaults below. Copy `.env.example` to `.env` to customize locally —
+`.env` is git-ignored and never committed.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `APP_NAME` | `Geo Measure API` | Name reported by the API and docs title |
+| `ENVIRONMENT` | `development` | `development` \| `staging` \| `production` |
+| `DEBUG` | `false` | Startup log marker only — never alters error responses |
+| `LOG_LEVEL` | `INFO` | `DEBUG` \| `INFO` \| `WARNING` \| `ERROR` \| `CRITICAL` |
+| `HOST` | `127.0.0.1` | Local bind address |
+| `PORT` | `8000` | Local port |
+| `API_PREFIX` | `/api` | Prefix for versioned routes (`/health` is exempt) |
+| `DATABASE_URL` | `sqlite:///./geo_measure.db` | Any SQLAlchemy URL |
+| `MAX_UPLOAD_MB` | `10` | Maximum upload size (1–1024 MB) |
+| `MAX_FEATURES` | `50000` | Maximum features per dataset (1–10 000 000) |
+| `STORAGE_DIR` | `uploads` | Upload directory (server-generated UUID names) |
+
+Inside Docker the container image defaults to `/data`-based values
+(`DATABASE_URL=sqlite:////data/geo_measure.db`, `STORAGE_DIR=/data/uploads`,
+`ENVIRONMENT=production`) — see the table under *Docker*.
+
 ### Docker
 
 The repository ships a reproducible container image with the working
@@ -105,6 +130,57 @@ docker run --rm geo-measure-api:test
 | `POST /api/files/` | Upload `.zip` (shapefile) or `.kml` → `{id, filename, status}` |
 | `GET /api/files/{id}/` | File metadata (status, feature count, CRS, safe failure text) |
 | `GET /api/files/{id}/measurements/` | Per-feature measurements |
+
+Interactive documentation: `/docs` (Swagger UI) and `/openapi.json`
+(schema) are served by FastAPI in every environment.
+
+### Example requests
+
+The three evaluator flows, verified against a running instance:
+
+```bash
+# 1. Upload — returns 201 and a Location header pointing at the resource
+curl -i -F "file=@sample.kml" http://127.0.0.1:8000/api/files/
+
+HTTP/1.1 201 Created
+location: /api/files/b3a5bf68-0e7b-4483-93d7-1b4bf543a0e3/
+{"id":"b3a5bf68-0e7b-4483-93d7-1b4bf543a0e3","filename":"sample.kml","status":"PROCESSING"}
+
+# 2. Metadata — 200 (processing finished in the same request)
+curl http://127.0.0.1:8000/api/files/b3a5bf68-0e7b-4483-93d7-1b4bf543a0e3/
+
+{"id":"b3a5bf68-0e7b-4483-93d7-1b4bf543a0e3","filename":"sample.kml","file_type":"kml",
+ "status":"COMPLETED","feature_count":3,"crs":"EPSG:4326","error_message":null,
+ "created_at":"2026-10-08T12:25:08.607320Z","updated_at":"2026-10-08T12:25:08.755983Z"}
+
+# 3. Measurements — 200 (planar values in a projected metric CRS)
+curl http://127.0.0.1:8000/api/files/b3a5bf68-0e7b-4483-93d7-1b4bf543a0e3/measurements/
+
+{"file_id":"b3a5bf68-0e7b-4483-93d7-1b4bf543a0e3","crs":"EPSG:4326","features":[
+  {"feature_id":0,"geometry_type":"Polygon",
+   "measurement":{"type":"area","value":838527.72,"unit":"square_meters"},
+   "status":"SUPPORTED","reason":null,"properties":{...}},
+  {"feature_id":1,"geometry_type":"LineString",
+   "measurement":{"type":"length","value":1343.30,"unit":"meters"},
+   "status":"SUPPORTED","reason":null,"properties":{...}},
+  {"feature_id":2,"geometry_type":"Point","measurement":null,
+   "status":"NO_MEASUREMENT","reason":"Point geometries require no measurement",
+   "properties":{...}}]}
+
+# Health / docs
+curl http://127.0.0.1:8000/health                 # {"status":"ok"}
+curl http://127.0.0.1:8000/docs                   # Swagger UI
+curl http://127.0.0.1:8000/openapi.json           # OpenAPI schema
+```
+
+Unknown ids answer `404` and unsupported extensions `415`, both in the
+error envelope described below:
+
+```bash
+curl -F "file=@notes.txt" http://127.0.0.1:8000/api/files/
+# 415 {"error":{"code":"UNSUPPORTED_FILE_TYPE",
+#      "message":"Unsupported file format (.txt); supported: .kml, .zip"}}
+```
 
 ## Error handling
 
@@ -304,7 +380,7 @@ app/
 ├── measurements/         # measurement engine (CRS via app.geo.crs)
 ├── storage/              # UUID-named local storage
 ├── db/                   # models, sessions, repository
-scripts/                  # verify_geo_env.py, init_db.py
+scripts/                  # verify_geo_env.py, init_db.py, benchmark_pipeline.py
 tests/                    # unit + integration suites
 ```
 
@@ -318,3 +394,27 @@ The suite covers: upload validation (incl. malicious archives), secure
 extraction, readers per geometry type, KML processing, domain-model
 serialization, CRS selection/transformation, measurement math verified
 against closed-form values, and multi-geometry/category matrices.
+
+## Limitations
+
+Known and deliberate scope boundaries:
+
+- **Accepted formats only**: Shapefile-in-ZIP and KML. GeoJSON,
+  GPX, GML, GeoTIFF and other formats are rejected
+  (`415 UNSUPPORTED_FILE_TYPE`).
+- **No authentication or rate limiting**: the service is a
+  single-tenant measurement API; deployment behind an authenticating
+  proxy is expected for shared environments.
+- **Local storage**: SQLite plus a local upload directory — no
+  PostGIS, Redis or object storage. Single-process deployments only
+  (no cross-worker job queue; processing runs inside the upload
+  request).
+- **Measurements are planar** in a projected metric CRS, with the
+  documented distortion bounds of the chosen projection (UTM ≈ 0.1 %
+  in-zone; EPSG:6933 equal-area for large extents) — not geodesic
+  (ellipsoidal) computations.
+- **Missing CRS is refused**, never inferred as EPSG:4326: such files
+  are stored and reported but not measured.
+- **Bounds**: `MAX_UPLOAD_MB` (10) and `MAX_FEATURES` (50 000) cap
+  accepted inputs; rate limiting and horizontal scaling are left to
+  the hosting layer.

@@ -35,10 +35,12 @@ coverage.xml
 *.sqlite
 *.sqlite3
 
-# Uploaded / temporary geospatial data
-tmp/
-uploads/
-storage/
+# Uploaded / temporary geospatial data (runtime dirs at the repository
+# root — anchored with a leading slash so source packages such as
+# app/storage/ are never matched and every module stays tracked)
+/tmp/
+/uploads/
+/storage/
 
 # Editors / OS
 .vscode/
