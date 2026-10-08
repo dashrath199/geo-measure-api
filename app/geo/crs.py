@@ -51,8 +51,8 @@ from typing import Literal
 
 import pyproj
 from pyproj import CRS, Transformer
+from shapely import transform as shapely_transform
 from shapely.geometry.base import BaseGeometry
-from shapely.ops import transform as shapely_transform
 
 from app.exceptions import (
     CRSError,
@@ -398,7 +398,12 @@ class CRSService:
                 f"Cannot build transform {source_crs!r} → {target_crs!r}: "
                 f"{exc}"
             ) from exc
-        return shapely_transform(transformer.transform, geometry)
+        # include_z=None keeps the old per-geometry Z inference (2D stays
+        # 2D, 3D stays 3D); interleaved=False matches pyproj's
+        # transform(x, y[, z]) call signature.
+        return shapely_transform(
+            geometry, transformer.transform, include_z=None, interleaved=False
+        )
 
     def prepare_for_measurement(
         self,
