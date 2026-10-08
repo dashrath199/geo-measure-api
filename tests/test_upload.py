@@ -1,9 +1,11 @@
 """Tests for ``POST /api/files/`` (upload endpoint).
 
 Covers every required scenario: valid KML, valid shapefile ZIP,
-unsupported extension, malformed ZIP, dangerous ZIP paths, oversized
-files, duplicate filenames and missing shapefile components — plus
-filename-traversal sanitization and optional ``.prj`` handling.
+unsupported extension, malformed KML/ZIP, extension/content mismatches
+(a ``.zip`` without ZIP magic, a ``.kml`` without a ``<kml`` root),
+dangerous ZIP paths, oversized files, duplicate filenames and missing
+shapefile components — plus filename-traversal sanitization and
+optional ``.prj`` handling.
 """
 
 from __future__ import annotations
@@ -228,6 +230,40 @@ def test_malformed_zip(
 
     assert response.status_code == 400
     assert "ZIP" in response.json()["error"]["message"]
+    assert _all_records() == []
+    assert _uploaded_files(settings) == []
+
+
+def test_zip_extension_with_non_zip_content_rejected(
+    client: TestClient, settings: Settings, kml_bytes: bytes
+) -> None:
+    """Extension/content mismatch: KML bytes under a ``.zip`` name.
+
+    Content sniffing rejects the upload before any archive handling:
+    the body lacks the ZIP magic bytes, so it fails with 400
+    ``MALFORMED_ZIP`` and nothing is persisted or stored.
+    """
+    response = _post(client, "report.zip", kml_bytes)
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "MALFORMED_ZIP"
+    assert _all_records() == []
+    assert _uploaded_files(settings) == []
+
+
+def test_kml_extension_with_zip_content_rejected(
+    client: TestClient, settings: Settings, shapefile_zip_bytes: bytes
+) -> None:
+    """Extension/content mismatch: ZIP bytes under a ``.kml`` name.
+
+    The KML sniff finds no ``<kml`` root element, so the upload fails
+    with 400 ``MALFORMED_KML`` and nothing is persisted or stored —
+    even though the bytes are a perfectly valid shapefile archive.
+    """
+    response = _post(client, "map.kml", shapefile_zip_bytes)
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "MALFORMED_KML"
     assert _all_records() == []
     assert _uploaded_files(settings) == []
 
