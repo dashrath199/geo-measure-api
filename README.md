@@ -30,6 +30,73 @@ Configuration is environment-driven:
 `DATABASE_URL`, `MAX_UPLOAD_MB`, `MAX_FEATURES`, `STORAGE_DIR`,
 `LOG_LEVEL`, …
 
+### Docker
+
+The repository ships a reproducible container image with the working
+geospatial stack preinstalled (GeoPandas, Shapely, PyProj, **Pyogrio**
+with bundled GDAL — Python 3.14 slim, no system GDAL, no Fiona), runs
+as a non-root user, and never has secrets baked in. Dependency
+installation is pinned by `requirements.lock.txt` (constraints applied
+on top of `requirements.txt` / `requirements-dev.txt`).
+
+Build:
+
+```bash
+docker build -t geo-measure-api .
+```
+
+Run:
+
+```bash
+docker run --rm -p 8000:8000 geo-measure-api
+```
+
+or, with Docker Compose (single `app` service, persistent storage,
+read-only root filesystem):
+
+```bash
+docker compose up --build
+```
+
+| URL | Purpose |
+|---|---|
+| `http://localhost:8000/api/files/` | API base (`API_PREFIX`, default `/api`) |
+| `http://localhost:8000/docs` | Swagger UI |
+| `http://localhost:8000/openapi.json` | OpenAPI schema |
+| `http://localhost:8000/health` | Health endpoint (also the container health check) |
+
+Environment configuration — the image defaults below are non-secret;
+override with `docker run -e VAR=value` or compose/shell variables (a
+local `.env` is git-ignored and never committed):
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `DATABASE_URL` | `sqlite:////data/geo_measure.db` | SQLAlchemy URL (SQLite by default) |
+| `STORAGE_DIR` | `/data/uploads` | Upload storage directory (server-generated UUID names) |
+| `MAX_UPLOAD_MB` | `10` | Maximum upload size in megabytes |
+| `MAX_FEATURES` | `50000` | Maximum features accepted per dataset |
+| `API_PREFIX` | `/api` | Prefix for versioned routes (`/health` is always unversioned) |
+
+Also honoured: `APP_NAME`, `ENVIRONMENT`, `LOG_LEVEL` (see
+`.env.example`).
+
+Persistent storage behavior: `docker compose` mounts the named volume
+`app-data` at `/data`, holding the SQLite database and uploaded files
+across `docker compose down`/`up` (remove with `docker compose down
+-v`). With plain `docker run`, add `-v geo-data:/data` for the same
+persistence; without a volume, storage lives inside the container and
+disappears with it. Only `/data` and `/tmp` are writable — the root
+filesystem is read-only under compose, and uploads are stored outside
+any web root (never served as static files).
+
+Run the test suite inside the image (separate test stage — the
+production image contains no test tooling):
+
+```bash
+docker build --target test -t geo-measure-api:test .
+docker run --rm geo-measure-api:test
+```
+
 ## API
 
 | Endpoint | Purpose |

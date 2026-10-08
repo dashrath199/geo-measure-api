@@ -1,0 +1,60 @@
+# ---------------------------------------------------------------------------
+# Build-context exclusions for the Geo Measure API image (Phase 20).
+# Keep the context minimal: application code, tests, scripts and the
+# dependency manifests — nothing that is generated, secret or local.
+# ---------------------------------------------------------------------------
+
+# Version control / CI
+.git/
+.gitignore
+.github/
+
+# Python caches and virtual environments (any name)
+**/__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+.venv/
+venv/
+env/
+ENV/
+
+# Environment files that may contain secrets (.env.example is a template
+# without secrets and stays available)
+.env
+.env.*
+!.env.example
+
+# Local databases (the container provisions its own under /data)
+*.db
+*.sqlite
+*.sqlite3
+
+# Runtime uploads and temporary directories (application-owned at run time)
+uploads/
+storage/
+tmp/
+
+# Generated artifacts and benchmark output
+build/
+dist/
+*.egg-info/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+benchmark_output/
+*.bench.json
+
+# Editors / OS noise
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# NOTE: tests/, scripts/, pytest.ini, requirements*.txt, Dockerfile,
+# .dockerignore and docker-compose.yml are intentionally NOT excluded —
+# the test stage and the packaging tests need them.

@@ -1,0 +1,55 @@
+# Deterministic dependency lock for the container image (Phase 20).
+#
+# This is a pip CONSTRAINTS file (-c), not a requirements file:
+# requirements.txt / requirements-dev.txt remain the source of the range
+# requirements, while every resolved version — including the full
+# transitive closure — is pinned here so image builds are reproducible.
+#
+# Generated from the working dependency set on the exact image platform
+# (linux/amd64, CPython 3.14, python:3.14.6-slim-bookworm) with:
+#
+#   docker run --rm -v "$PWD":/repo:ro python:3.14.6-slim-bookworm \
+#     bash -c "pip install --no-cache-dir -q -r /repo/requirements.txt pytest httpx && pip freeze"
+#
+# The geospatial stack (geopandas/shapely/pyproj/pyogrio) matches the
+# verified local baseline. Fiona is intentionally absent: it ships no
+# Python 3.14 wheels, and Pyogrio is the GeoPandas I/O engine.
+annotated-doc==0.0.5
+annotated-types==0.8.0
+anyio==4.15.1
+certifi==2026.7.22
+click==8.5.0
+fastapi==0.142.4
+geopandas==1.2.0
+h11==0.16.0
+httpcore==1.0.9
+httptools==0.8.0
+httpx==0.28.1
+idna==3.20
+iniconfig==2.3.1
+numpy==2.5.3
+opentelemetry-api==1.45.1
+packaging==26.3
+pandas==3.0.6
+pluggy==1.6.0
+pydantic==2.13.5
+pydantic-settings==2.15.0
+pydantic_core==2.46.5
+Pygments==2.21.0
+pyogrio==0.13.0
+pyproj==3.8.0
+pytest==9.1.1
+python-dateutil==2.9.0.post0
+python-dotenv==1.2.4
+python-multipart==0.0.32
+PyYAML==6.0.3
+shapely==2.2.0
+six==1.17.0
+SQLAlchemy==2.1.4
+starlette==1.7.0
+typing-inspection==0.4.4
+typing_extensions==4.16.0
+uvicorn==0.54.0
+uvloop==0.23.0
+watchfiles==1.3.0
+websockets==17.2

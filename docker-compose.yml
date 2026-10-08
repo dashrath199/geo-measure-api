@@ -1,0 +1,41 @@
+# ---------------------------------------------------------------------------
+# Geo Measure API — local development / demo stack (Phase 20).
+#
+# One application service only; no extra infrastructure. All runtime
+# configuration is environment-driven (shell, or a local .env file that
+# is git-ignored) — no secrets are committed here or baked into the image.
+#
+#   docker compose up --build     # API on http://localhost:8000
+#   docker compose ps             # health status (GET /health)
+# ---------------------------------------------------------------------------
+services:
+  app:
+    build:
+      context: .
+      target: runtime
+    image: geo-measure-api:20
+    ports:
+      - "8000:8000"
+    environment:
+      APP_NAME: ${APP_NAME:-Geo Measure API}
+      ENVIRONMENT: ${ENVIRONMENT:-production}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      API_PREFIX: ${API_PREFIX:-/api}
+      DATABASE_URL: ${DATABASE_URL:-sqlite:////data/geo_measure.db}
+      STORAGE_DIR: ${STORAGE_DIR:-/data/uploads}
+      MAX_UPLOAD_MB: ${MAX_UPLOAD_MB:-10}
+      MAX_FEATURES: ${MAX_FEATURES:-50000}
+    # Explicit application-owned writable locations only: the SQLite
+    # database and uploaded files live in the named volume mounted at
+    # /data; /tmp is scratch space for multipart spooling and ZIP
+    # extraction. Everything else in the container is read-only.
+    volumes:
+      - app-data:/data
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    # Container health check (GET /health) is defined in the Dockerfile
+    # and inherited by this service.
+
+volumes:
+  app-data:
