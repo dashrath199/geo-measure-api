@@ -164,7 +164,71 @@ def _code(crs: CRS) -> str:
 
 
 class CRSService:
-    """Detects, classifies and transforms coordinate reference systems."""
+    """Detects, classifies and transforms coordinate reference systems.
+
+    Performance: parsing a CRS and building a pyproj ``Transformer`` are
+    the expensive steps of the per-feature hot path (``from_crs`` alone
+    dominates measurement time). Both are therefore memoized in small
+    per-instance caches: one service instance lives exactly as long as
+    one processing run, so a dataset reuses one transformer per CRS pair
+    instead of rebuilding it for every feature. Caches are bounded, so a
+    pathological run (a distinct projection per feature) degrades to the
+    previous build-per-call behavior instead of growing memory.
+    """
+
+    # Per-instance memoization bounds (see class docstring).
+    _MAX_CACHED_CRS = 32
+    _MAX_CACHED_TRANSFORMERS = 32
+
+    def __init__(self) -> None:
+        """Initialize the empty memoization caches."""
+        self._parsed_cache: dict[str, CRS] = {}
+        self._transformer_cache: dict[tuple[str, str], Transformer] = {}
+
+    def _parse_cached(self, value: str) -> CRS:
+        """Parse a CRS string, memoizing successful results.
+
+        Args:
+            value: Any pyproj-parseable CRS string.
+
+        Returns:
+            The parsed :class:`pyproj.CRS`.
+
+        Raises:
+            pyproj.exceptions.CRSError: When the string is not a valid
+                CRS (never cached — every call re-raises, as before).
+        """
+        key = str(value)
+        cached = self._parsed_cache.get(key)
+        if cached is not None:
+            return cached
+        parsed = CRS.from_user_input(key)
+        if len(self._parsed_cache) < self._MAX_CACHED_CRS:
+            self._parsed_cache[key] = parsed
+        return parsed
+
+    def _get_transformer(self, source: CRS, target: CRS) -> Transformer:
+        """Return the transformer for a parsed CRS pair, building it once.
+
+        ``Transformer.from_crs`` is deterministic for a fixed
+        ``(source, target)`` pair, so a cache hit is behaviorally
+        identical to a fresh build — same PROJ pipeline, same numbers.
+
+        Args:
+            source: Parsed source CRS.
+            target: Parsed target CRS.
+
+        Returns:
+            The transformer (``always_xy=True``, as elsewhere).
+        """
+        key = (_code(source), _code(target))
+        cached = self._transformer_cache.get(key)
+        if cached is not None:
+            return cached
+        transformer = Transformer.from_crs(source, target, always_xy=True)
+        if len(self._transformer_cache) < self._MAX_CACHED_TRANSFORMERS:
+            self._transformer_cache[key] = transformer
+        return transformer
 
     def parse_source(self, source_crs: str | None) -> CRS:
         """Parse source CRS metadata strictly.
@@ -187,7 +251,7 @@ class CRSService:
                 "dataset's CRS is known."
             )
         try:
-            return CRS.from_user_input(source_crs)
+            return self._parse_cached(str(source_crs))
         except pyproj.exceptions.CRSError as exc:
             raise InvalidCRSError(
                 f"Source CRS {source_crs!r} is not a valid CRS: {exc}"
@@ -343,9 +407,8 @@ class CRSService:
         )
         return target
 
-    @staticmethod
     def _to_geographic_bounds(
-        bounds: tuple[float, float, float, float], source: CRS
+        self, bounds: tuple[float, float, float, float], source: CRS
     ) -> tuple[float, float, float, float]:
         """Reproject a bounding box to WGS 84 lon/lat via its corners.
 
@@ -357,7 +420,9 @@ class CRSService:
             The geographic extent ``(minx, miny, maxx, maxy)``.
         """
         minx, miny, maxx, maxy = bounds
-        transformer = Transformer.from_crs(source, _WGS84, always_xy=True)
+        transformer = self._get_transformer(
+            source, self._parse_cached(_WGS84)
+        )
         corners = [
             transformer.transform(x, y)
             for x in (minx, maxx)
@@ -389,10 +454,8 @@ class CRSService:
         """
         source = self.parse_source(source_crs)
         try:
-            target = CRS.from_user_input(target_crs)
-            transformer = Transformer.from_crs(
-                source, target, always_xy=True
-            )
+            target = self._parse_cached(str(target_crs))
+            transformer = self._get_transformer(source, target)
         except (pyproj.exceptions.CRSError, ValueError) as exc:
             raise InvalidCRSError(
                 f"Cannot build transform {source_crs!r} → {target_crs!r}: "
